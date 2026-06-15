@@ -4,6 +4,12 @@
 // real HTTP requests against it. This is distinct from unit tests, which live
 // alongside the code they test and call functions directly.
 //
+// Why the separation?
+//   - Integration tests validate the full request path: routing, JSON decoding,
+//     header handling, status codes. Unit tests validate individual functions.
+//   - Keeping them in a separate package (tests) means they can only use the
+//     public API of internal packages, which is a useful constraint.
+//
 // Run all integration tests:
 //
 //	go test ./tests/...
@@ -17,37 +23,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
-
-	"conduit/internal/api"
-	"conduit/internal/config"
 )
-
-// newTestServer is a helper that creates a real HTTP test server and returns
-// it. The caller is responsible for calling ts.Close() when done (use defer).
-//
-// httptest.NewServer binds to a random free port on 127.0.0.1. This means:
-// - Tests can run in parallel without port conflicts.
-// - No hardcoded ports to manage.
-// - Works identically on Windows, macOS, and Linux.
-func newTestServer(t *testing.T) *httptest.Server {
-	t.Helper()
-
-	// ListenAddr is unused by httptest.NewServer — it manages its own listener.
-	// We pass a minimal config to satisfy NewServer's signature; later steps
-	// will add WAL paths and other settings that tests will need to set here.
-	cfg := &config.Config{ListenAddr: ":0"}
-	srv := api.NewServer(cfg)
-	ts := httptest.NewServer(srv.Handler)
-
-	// Register cleanup so the test server shuts down when the test ends,
-	// whether it passes or fails. Idiomatic Go: prefer t.Cleanup over
-	// manually calling defer in each test when a helper creates the resource.
-	t.Cleanup(ts.Close)
-
-	return ts
-}
 
 // TestPublish_Returns201 is the happy-path test for the publish endpoint.
 //
@@ -57,9 +34,9 @@ func newTestServer(t *testing.T) *httptest.Server {
 //   - message_id is present and non-empty.
 //   - queued_at is present and non-empty.
 //
-// In Step 1 the handler doesn't actually enqueue anything, but the HTTP
-// contract must be correct from the start — consumers and producers will
-// depend on these fields from day one.
+// In Step 2 the handler actually enqueues the message on the named queue,
+// but the response contract is unchanged from Step 1 — consumers and
+// producers depend on these fields from day one.
 func TestPublish_Returns201(t *testing.T) {
 	ts := newTestServer(t)
 
