@@ -1,7 +1,12 @@
-// This starts an http server and is main entry point for the broker.
+// Command broker is the Conduit message queue broker.
+//
+// It starts an HTTP server, registers signal handlers for graceful shutdown,
+// and blocks until it receives SIGINT (Ctrl+C) or SIGTERM (Docker stop).
+// All business logic lives in internal/; this file is intentionally thin.
 //
 // Usage:
-//	go run ./cmd/broker  # default: listen on :8080
+//
+//	go run ./cmd/broker              # default: listen on :8080
 //	go run ./cmd/broker -listen :9090
 package main
 
@@ -16,15 +21,21 @@ import (
 	"time"
 
 	"conduit/internal/api"
+	"conduit/internal/broker"
 	"conduit/internal/config"
 )
 
-
 func main() {
-	cfg := config.Load() // Default configs in internal/config.
+	// Load configuration from flags. All defaults are defined in internal/config.
+	cfg := config.Load()
 
-	srv := api.NewServer(cfg)
+	// single broker
+	b := broker.NewBroker()
 
+	// Build the HTTP server.
+	srv := api.NewServer(cfg, b)
+
+	// Start the server in a separate goroutine so that it doesn't block the main thread.
 	go func() {
 		log.Printf("conduit broker listening on %s", cfg.ListenAddr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -37,8 +48,10 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 
-	log.Println("Shutdown signal received. Draining in-flight requests")
+	log.Println("shutdown signal received — draining in-flight requests")
 
+	// Give the server up to 10 seconds to finish in-flight HTTP requests
+	// before forcibly closing connections. 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -48,3 +61,4 @@ func main() {
 
 	log.Println("broker stopped cleanly")
 }
+
