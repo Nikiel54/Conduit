@@ -13,8 +13,8 @@ import "sync"
 // A single *Broker is created once in cmd/broker/main.go and shared by
 // every HTTP handler.
 type Broker struct {
-	queuesMu sync.RWMutex
-	queues   map[string]*Queue
+	queuesMu     sync.RWMutex
+	queues       map[string]*Queue
 	indexMu      sync.Mutex
 	messageIndex map[string]*Queue
 }
@@ -49,7 +49,7 @@ func (b *Broker) GetOrCreateQueue(name string) *Queue {
 	}
 
 	q = NewQueue(name)
-	b.queues[name] = q // insert 
+	b.queues[name] = q // insert
 	return q
 }
 
@@ -59,16 +59,16 @@ func (b *Broker) GetOrCreateQueue(name string) *Queue {
 //
 // Known limitation (documented, not silently accepted): entries are
 // removed on successful ack (see UnregisterInFlight) but NOT when a
-// message is redelivered or moved to the DLQ by handleTimeout. A
-// redelivered message is still owned by the same queue, so a stale entry
-// is harmless (it still points somewhere valid) — but a DLQ'd message's
-// entry lingers even though Ack on that ID will now return
-// ErrMessageNotFound (404) via Queue.Ack. For a long-running broker with
-// many DLQ'd messages, this index grows unboundedly. A future step could
-// evict entries when handleTimeout moves a message to the DLQ, or add a
-// time-based sweep. Not addressed now because Tests 1-4 don't exercise it
-// and we'd rather document the gap than add unbounded-growth-avoidance
-// code with no test proving it's needed.
+// message is redelivered or moved to the DLQ (the timeoutCh case in
+// Queue.run, internal/broker/queue.go). A redelivered message is still
+// owned by the same queue, so a stale entry is harmless (it still points
+// somewhere valid) — but a DLQ'd message's entry lingers even though Ack on
+// that ID will now return ErrMessageNotFound (404) via Queue.Ack. For a
+// long-running broker with many DLQ'd messages, this index grows
+// unboundedly. A future step could evict entries when a message moves to
+// the DLQ, or add a time-based sweep. Not addressed now because Tests 1-4
+// don't exercise it and we'd rather document the gap than add
+// unbounded-growth-avoidance code with no test proving it's needed.
 func (b *Broker) RegisterInFlight(messageID string, q *Queue) {
 	b.indexMu.Lock()
 	defer b.indexMu.Unlock()
@@ -90,4 +90,12 @@ func (b *Broker) LookupQueue(messageID string) (*Queue, bool) {
 	return q, ok
 }
 
+// Close shuts down every queue's dispatcher goroutine.
+func (b *Broker) Close() {
+	b.queuesMu.RLock()
+	defer b.queuesMu.RUnlock()
 
+	for _, q := range b.queues {
+		q.Close()
+	}
+}
