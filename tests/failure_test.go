@@ -9,6 +9,8 @@ package tests
 
 import (
 	"fmt"
+	"net/http"
+	"sync"
 	"testing"
 	"time"
 )
@@ -147,8 +149,8 @@ func TestFailure3_AckTimeoutRedelivery(t *testing.T) {
 // redelivered indefinitely, and that it becomes visible via
 // GET /queues/{name}/dlq.
 //
-// Worked trace for max_retries=3 (see internal/broker/timeout.go for the
-// full explanation):
+// Worked trace for max_retries=3 (see the timeoutCh case in
+// internal/broker/queue.go's dispatcher loop for the full logic):
 //
 //	consume 1 -> delivery_count 1, timeout -> requeued (1 < 3)
 //	consume 2 -> delivery_count 2, timeout -> requeued (2 < 3)
@@ -193,5 +195,88 @@ func TestFailure4_DeadLetterRouting(t *testing.T) {
 	}
 	if dlq[0].DeliveryCount != maxRetries {
 		t.Fatalf("expected DLQ delivery_count %d, got %d", maxRetries, dlq[0].DeliveryCount)
+	}
+}
+
+// TestFailure6_ConcurrentConsumerCorrectness publishes 1000 messages and then
+// runs 4 consumers concurrently, each looping "consume 1 -> ack -> repeat"
+// until it sees an empty response. It asserts that every message was
+// delivered to exactly one consumer: the total number of messages received
+// across all consumers is 1000, and no message_id appears in more than one
+// consumer's list.
+//
+// This is Subsystem 5 (the dispatcher goroutine pattern) under test: a
+// single goroutine (Queue.run, added in Step 3) serializes every Dequeue
+// request. Even though 4 goroutines are racing to call
+// POST /queues/{name}/consume, each of the 1000 messages can only be popped
+// from pending once -- there's no shared state for two dispatcher requests
+// to race over. Run with `go test -race`; that's the whole point of this
+// test (and of Step 3).
+//
+// Each consumer's results are written only to its own slot in received, so
+// there's no shared mutable state between the goroutines themselves either
+// -- the assertions below run after wg.Wait(), which happens-after every
+// goroutine's write to its slot.
+func TestFailure6_ConcurrentConsumerCorrectness(t *testing.T) {
+	ts := newTestServer(t)
+
+	const (
+		numMessages  = 1000
+		numConsumers = 4
+	)
+
+	for i := 0; i < numMessages; i++ {
+		publishMessage(t, ts, "concurrent-queue", payloadForIndex(i), "medium", 3)
+	}
+
+	received := make([][]string, numConsumers)
+
+	var wg sync.WaitGroup
+	for c := 0; c < numConsumers; c++ {
+		wg.Add(1)
+		go func(consumerIdx int) {
+			defer wg.Done()
+
+			var ids []string
+			for {
+				got := consumeMessages(t, ts, "concurrent-queue", 0, 1)
+				if len(got) == 0 {
+					// Pending is empty: every message has been dequeued by
+					// some consumer (possibly this one, possibly another).
+					break
+				}
+
+				for _, msg := range got {
+					ids = append(ids, msg.MessageID)
+					if status := ackMessage(t, ts, msg.MessageID); status != http.StatusNoContent {
+						t.Errorf("consumer %d: ack %s: expected 204, got %d", consumerIdx, msg.MessageID, status)
+					}
+				}
+			}
+
+			received[consumerIdx] = ids
+		}(c)
+	}
+	wg.Wait()
+
+	seen := make(map[string]int) // message_id -> number of consumers that received it
+	total := 0
+	for _, ids := range received {
+		total += len(ids)
+		for _, id := range ids {
+			seen[id]++
+		}
+	}
+
+	if total != numMessages {
+		t.Fatalf("expected %d total messages received across all consumers, got %d", numMessages, total)
+	}
+	if len(seen) != numMessages {
+		t.Fatalf("expected %d distinct message_ids, got %d", numMessages, len(seen))
+	}
+	for id, count := range seen {
+		if count > 1 {
+			t.Errorf("message_id %q delivered to %d consumers, want 1", id, count)
+		}
 	}
 }

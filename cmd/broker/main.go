@@ -51,7 +51,7 @@ func main() {
 	log.Println("shutdown signal received — draining in-flight requests")
 
 	// Give the server up to 10 seconds to finish in-flight HTTP requests
-	// before forcibly closing connections. 
+	// before forcibly closing connections.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -59,6 +59,10 @@ func main() {
 		log.Printf("graceful shutdown incomplete: %v", err)
 	}
 
+	// Now that srv.Shutdown has returned, no HTTP handler can be mid-call
+	// into a queue's Enqueue/Dequeue/Ack. Safe to stop every queue's
+	// dispatcher goroutine (Step 3).
+	b.Close()
+
 	log.Println("broker stopped cleanly")
 }
-

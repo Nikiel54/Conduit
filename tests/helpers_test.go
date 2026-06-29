@@ -36,7 +36,13 @@ func newTestServer(t *testing.T) *httptest.Server {
 	srv := api.NewServer(cfg, b)
 	ts := httptest.NewServer(srv.Handler)
 
-	t.Cleanup(ts.Close)
+	// ts.Close() first: it blocks until in-flight HTTP handlers finish, so
+	// by the time b.Close() runs, no handler can be mid-call into a queue's
+	// Enqueue/Dequeue/Ack -- which Queue.Close requires (Step 3).
+	t.Cleanup(func() {
+		ts.Close()
+		b.Close()
+	})
 
 	return ts
 }
