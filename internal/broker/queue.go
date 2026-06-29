@@ -148,11 +148,7 @@ func (q *Queue) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Stop every outstanding visibility timer. If a timer already
-			// fired and its callback is mid-flight, Stop() returns false
-			// and the callback's own select on ctx.Done() (see
-			// startVisibilityTimer) keeps it from blocking on timeoutCh,
-			// which nothing will read after we return.
+			// Stop every outstanding visibility timer. 
 			for _, entry := range inFlight {
 				entry.timer.Stop()
 			}
@@ -217,8 +213,7 @@ func (q *Queue) run(ctx context.Context) {
 }
 
 // Enqueue adds a new message to the queue's pending buffer for its
-// priority. It blocks until the dispatcher has appended the message, so a
-// Dequeue called immediately after Enqueue returns is guaranteed to see it.
+// priority; blocks until the dispatcher has appended the message.
 func (q *Queue) Enqueue(msg *Message) {
 	req := enqueueRequest{msg: msg, done: make(chan struct{})}
 	q.enqueueCh <- req
@@ -226,15 +221,8 @@ func (q *Queue) Enqueue(msg *Message) {
 }
 
 // Dequeue removes and returns the next message according to strict
-// priority order (high, then medium, then low; FIFO within each tier). It
+// priority order.
 // returns (nil, false) if every priority bucket is empty.
-//
-// On success, a visibility timeout is armed for the returned message (see
-// startVisibilityTimer in consumer.go) and the message is tracked in
-// inFlight until it is acked or the timer fires.
-//
-// The returned *Message is a copy (snapshot) made by the dispatcher --
-// callers can read it freely without synchronization.
 func (q *Queue) Dequeue(visibilityTimeout time.Duration) (*Message, bool) {
 	req := dequeueRequest{visibilityTimeout: visibilityTimeout, resp: make(chan dequeueResult)}
 	q.dequeueCh <- req
@@ -244,13 +232,6 @@ func (q *Queue) Dequeue(visibilityTimeout time.Duration) (*Message, bool) {
 
 // ErrMessageNotFound is returned by Queue.Ack when the given message ID is
 // not currently in-flight on this queue.
-//
-// For Step 2 (Tests 1-4), this distinction isn't exercised, so Ack returns
-// this single error for "not currently in-flight" regardless of whether the
-// ID never existed, was already acked, or expired and was
-// redelivered/DLQ'd. internal/api/ack.go maps this to HTTP 404. If a future
-// step needs the 409 case (e.g. a dedicated edge-case test), revisit this
-// with a bounded "recently completed" set.
 var ErrMessageNotFound = errors.New("message not found or not in-flight")
 
 // Ack acknowledges successful processing of an in-flight message, removing
@@ -263,14 +244,11 @@ func (q *Queue) Ack(messageID string) error {
 
 // Close cancels the dispatcher goroutine (run) and blocks until it has
 // exited.
-//
-// Close must be called at most once, and only once no further
-// Enqueue/Dequeue/Ack/DLQMessages calls will be made on this queue: after
-// run() returns, nothing reads enqueueCh/dequeueCh/ackCh/dlqCh, so a call
-// arriving afterward would block forever. See Broker.Close, which is the
-// intended caller -- it's invoked from cmd/broker/main.go after
-// srv.Shutdown has confirmed no HTTP handlers are still running.
+// TODO: add bounds to ensure close cannot be called twice successfully, 
+// and that no other methods are called after Close.
 func (q *Queue) Close() {
 	q.cancel()
 	<-q.done
 }
+
+
